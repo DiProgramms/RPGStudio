@@ -1,14 +1,29 @@
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QFileDialog, QVBoxLayout, QWidget, QListWidget, QLineEdit, QLabel, QPushButton, QSplitter, QTabWidget, QColorDialog, 
-QInputDialog, QGraphicsTextItem, QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem)
+QInputDialog, QGraphicsTextItem, QGraphicsRectItem, QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem, QGraphicsSimpleTextItem)
 
-from PyQt5.QtGui import (QPixmap, QPainter, QPainterPath, QPen, QColor, QBrush, QFont, QRadialGradient)
-from PyQt5.QtCore import Qt, QRectF, QPoint, QPointF, QSizeF
-import sys, math
+from PyQt5.QtGui import (QPixmap, QPainter, QPainterPath, QPen, QColor, QBrush, QFont, QRadialGradient, QPalette)
+from PyQt5.QtCore import Qt, QRectF, QPoint, QPointF, QLineF, QTimer
+
+from PyQt5.QtMultimediaWidgets import QVideoWidget
+
+import sys, json, math, os, shutil
+
+os.add_dll_directory(r"C:\Program Files\VideoLAN\VLC")
+import vlc
+
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(__file__)
+
+SETTINGS_FILE = os.path.join(BASE_DIR, "settings.json")
 
 class MapGraphicView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
         self._zoom = 0
+        self.mainWindow = None
+        self.rulerStart = None
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setRenderHints(
             QPainter.Antialiasing |
@@ -33,7 +48,66 @@ class MapGraphicView(QGraphicsView):
             return
         
         self.scale(zoomFactor, zoomFactor)
+
+    def mousePressEvent(self, event):
+        if self.mainWindow and self.mainWindow.rulerMode:
+            scenePos = self.mapToScene(event.pos())
+            
+            if event.button() == Qt.RightButton:
+                items = self.scene().items(scenePos)
+                for it in items:
+                    if isinstance(it, QGraphicsLineItem):
+                        self.scene().removeItem(it)
+                        if it is self.mainWindow.currentRuler:
+                            self.mainWindow.currentRuler = None
+                            self.rulerStart = None
+                        return
+                return
+    
+            if event.button() == Qt.LeftButton:
+                if self.mainWindow.currentRuler is None or self.rulerStart is None:
+                    self.rulerStart = scenePos
+                    line = QGraphicsLineItem(QLineF(scenePos, scenePos))
+                    line.setPen(QPen(Qt.yellow, 2))
+                    textItem = QGraphicsSimpleTextItem("0", line)
+                    textItem.setBrush(QBrush(Qt.white))
+                    textItem.setPos(scenePos)
+                    line.setZValue(5)
+                    self.scene().addItem(line)
+                    self.mainWindow.currentRuler = line
+
+                else:
+                    newLine = QLineF(self.rulerStart, scenePos)
+                    line = self.mainWindow.currentRuler
+                    line.setLine(newLine)
+                    dist = newLine.length()
+                    for child in line.childItems():
+                        if isinstance(child, QGraphicsSimpleTextItem):
+                            child.setText(f"{dist:.1f}")
+                            mid = (newLine.p1() + newLine.p2()) / 2
+                            child.setPos(mid)
+                    self.rulerStart = None
+                return
         
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (self.mainWindow and self.mainWindow.rulerMode and 
+        self.rulerStart is not None and self.mainWindow.currentRuler is not None):
+
+            scenePos = self.mapToScene(event.pos())
+            line = self.mainWindow.currentRuler
+            newLine = QLineF(self.rulerStart, scenePos)
+            line.setLine(newLine)
+            dist = newLine.length()
+            for child in line.childItems():
+                if isinstance(child, QGraphicsSimpleTextItem):
+                    child.setText(f"{dist:.1f}")
+                    mid = (newLine.p1() + newLine.p2()) / 2
+                    child.setPos(mid)    
+            return
+        super().mouseMoveEvent(event)
+
 class FogItem(QGraphicsRectItem):
     def __init__(self, rect):
         super().__init__(rect)
@@ -50,56 +124,65 @@ class FogItem(QGraphicsRectItem):
 class LightItem(QGraphicsEllipseItem):
     def __init__(self, radius, center):
         super().__init__(-radius, -radius, radius*2, radius*2)
+        self.radius = radius
+
         gradient = QRadialGradient(0, 0, radius)
-        gradient.setColorAt(0, QColor(255, 255, 200, 180))
+        gradient.setColorAt(0, QColor(255, 255, 200, 80))
         gradient.setColorAt(1, QColor(0, 0, 0, 0))
+
         self.setBrush(QBrush(gradient))
         self.setPos(center)
-        self.setZValue(2)
+        self.setZValue(-1)
         self.setFlag(QGraphicsEllipseItem.ItemIsMovable, False)
         self.setFlag(QGraphicsEllipseItem.ItemIsSelectable, False)
 
-class LightCone(QGraphicsEllipseItem):
+class LightCone(QGraphicsItem):
     def __init__(self, radius, center, angle=90):
-        super().__init__(-radius, -radius, radius*2, radius*2)
+        super().__init__()
         self.radius = radius
         self.angle = angle
         self.rotation_angle = 0
+
+        self._rect = QRectF(-radius, -radius, radius*2, radius*2)
         self.setPos(center)
-        self.setZValue(2)
-        self.setFlag(QGraphicsEllipseItem.ItemIsMovable, False)
-        self.setFlag(QGraphicsEllipseItem.ItemIsSelectable, False)
+        self.setZValue(-1)
+        self.setFlag(QGraphicsItem.ItemIsMovable, False)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+
+    def boundingRect(self):
+        return self._rect
 
     def setRotationAngle(self, angle):
-        self.rotation_angle = angle
+        self.rotation_angle = angle % 360
         self.update()
 
     def paint(self, painter, option, widget):
         painter.setRenderHint(QPainter.Antialiasing)
 
-        center = QPointF(self.boundingRect().center())
-        half_angle = self.angle / 2 * math.pi / 180
-        dir_rad = self.rotation_angle * math.pi / 180
+        center = QPointF(0, 0)
+        half_angle = (self.angle / 2.0) * math.pi / 180.0
+        dir_rad = self.rotation_angle * math.pi / 180.0
 
         path = QPainterPath()
         path.moveTo(center)
 
         #Ponto 1 (Esquerda)
         p1 = QPointF(
-            center.x() + self.radius * math.cos(dir_rad - half_angle),
-            center.y() + self.radius * math.sin(dir_rad - half_angle)
+            self.radius * math.cos(dir_rad - half_angle),
+            self.radius * math.sin(dir_rad - half_angle)
         )
         path.lineTo(p1)
 
         #Arco do Cone
-        arc_rect = QRectF(center, QSizeF(self.radius* 1.8, self.radius* 1.8))
-        start_angle = (self.rotation_angle + self.angle/2) * 180 / math.pi
-        path.arcTo(arc_rect, start_angle, self.angle)
+        arc_rect = QRectF(-self.radius, -self.radius, self.radius * 2, self.radius * 2)
+        start_deg = -math.degrees(dir_rad - half_angle)
+        span_deg = -self.angle
+        path.arcTo(arc_rect, start_deg, span_deg)
 
         #Ponto 2 (Direita)
         p2 = QPointF(
-            center.x() + self.radius * math.cos(dir_rad + half_angle),
-            center.y() + self.radius * math.sin(dir_rad + half_angle)
+            self.radius * math.cos(dir_rad + half_angle),
+            self.radius * math.sin(dir_rad + half_angle)
         )
         path.lineTo(p2)
         path.closeSubpath()
@@ -114,6 +197,27 @@ class LightCone(QGraphicsEllipseItem):
         painter.setPen(Qt.NoPen)
         painter.drawPath(path)
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            parent = self.parentItem()
+            if isinstance(parent, TokenItem):
+                parent.setSelected(False)
+            self.setSelected(True)
+            self._dragStartPos = event.pos()
+            self._dragStartAngle = self.rotation_angle
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+    
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            p = event.pos()
+            angle = math.degrees(math.atan2(p.y(), p.x()))
+            self.setRotationAngle(angle)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
 class RulerItem(QGraphicsLineItem):
     def __init__(self, start, end, text):
         super().__init__(start.x(), start.y(), end.x(), end.y())
@@ -122,7 +226,7 @@ class RulerItem(QGraphicsLineItem):
         self.textItem.setBrush(QBrush(Qt.white))
         mid = QPointF((start.x() + end.x()) / 2, (start.y() + end.y()) / 2)
         self.textItem.setPos(mid)
-        self.setZValue(1)
+        self.setZValue(2)
 
 class TokenItem(QGraphicsPixmapItem):
 
@@ -133,6 +237,7 @@ class TokenItem(QGraphicsPixmapItem):
         self.setFlag(QGraphicsPixmapItem.ItemIsMovable, True)
         self.setFlag(QGraphicsPixmapItem.ItemIsSelectable, True)
         self.setFlag(QGraphicsPixmapItem.ItemSendsScenePositionChanges, True)
+        self.setFlag(QGraphicsPixmapItem.ItemIsFocusable, True)
         self.setAcceptHoverEvents(True)
         self.border_color = border_color
         self.preview = None
@@ -148,6 +253,14 @@ class TokenItem(QGraphicsPixmapItem):
         painter.setPen(pen)
         painter.setClipping(False)
         painter.drawEllipse(QRectF(1, 1, self.pixmap().width()-2, self.pixmap().height()-2))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            for child in self.childItems():
+                child.setSelected(False)
+            self.setSelected(True)
+            self.setFocus()
+        super().mousePressEvent(event)
 
     def hoverEnterEvent(self, event):
         if self.preview is None:
@@ -184,10 +297,26 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("RPG Studio")
         self.resize(1200, 700)
         self.sceneCounter = 0
+        self.rulerMode = False
+        self.currentRuler = None
+        self.currentTheme = "light"
 
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.South)
         self.setCentralWidget(self.tabs)
+
+        if getattr(sys, "frozen", False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(__file__)
+        
+        self.cinematicsDir = os.path.join(base_dir, "cinematics")
+        os.makedirs(self.cinematicsDir, exist_ok=True)
+
+        self.cineTimer = QTimer(self)
+        self.cineTimer.setSingleShot(True)
+        self.cineTimer.timeout.connect(self.runCinematic)
+        self.pendingCinematicName = None 
 
         self.scenes = []
         self.views = []
@@ -196,9 +325,25 @@ class MainWindow(QMainWindow):
         self.mapItems = []
         self.fogItems = []
         self.tokenLights = {}
+        self.savedLights = {}
 
         self.initMenu()
         self.addSceneTab("Cena 1")
+        self.initCinematicsTab()
+
+        self.videoWindow = QMainWindow(self)
+        self.videoWindow.setWindowTitle("Cinematic")
+        self.videoWindow.resize(800,450)
+        
+        self.videoWidget = QVideoWidget(self.videoWindow)
+        self.videoWindow.setCentralWidget(self.videoWidget)
+        
+        self.vlc_instance = vlc.Instance()
+        self.vlc_player = self.vlc_instance.media_player_new()
+
+        self.pendingCinematicPath = None
+
+        self.loadSettings()
     
     def addSceneTab(self, name=None):
         if name is None:
@@ -207,6 +352,7 @@ class MainWindow(QMainWindow):
 
         scene = QGraphicsScene(self)
         view = MapGraphicView(scene)
+        view.mainWindow = self
 
         turnOrderList = QListWidget()
         turnOrderList.setDragDropMode(QListWidget.InternalMove)
@@ -263,6 +409,10 @@ class MainWindow(QMainWindow):
         clearSceneAction = mapMenu.addAction("Limpar Cena")
         clearSceneAction.triggered.connect(lambda: self.clearCurrentScene)
 
+        cineMenu = menu.addMenu("Cinematics")
+        addCineAction = cineMenu.addAction("Adicionar Cinematic")
+        addCineAction.triggered.connect(self.addCinematicFile)
+
         tokenMenu = menu.addMenu("Tokens")
         openTokenAction = tokenMenu.addAction("Add Player Token")
         openTokenAction.triggered.connect(self.openTokenImage)
@@ -275,11 +425,117 @@ class MainWindow(QMainWindow):
         addFogAction = fogMenu.addAction("Adicionar Névoa")
         addFogAction.triggered.connect(self.setFogOnMap)
 
+        themeMenu = menu.addMenu("Tema")
+        lightAction = themeMenu.addAction("Claro")
+        darkAction = themeMenu.addAction("Escuro")
+
+        lightAction.triggered.connect(lambda: self.apply_theme("light"))
+        darkAction.triggered.connect(lambda: self.apply_theme("dark"))
+
         functionsMenu = menu.addMenu("Funções")
         self.rubberBandAction = functionsMenu.addAction("Seleção Multipla")
         self.rubberBandAction.setCheckable(True)
         self.rubberBandAction.setChecked(False)
         self.rubberBandAction.triggered.connect(self.toggleRubberBandMode)
+
+        self.rulerAction = functionsMenu.addAction("Régua")
+        self.rulerAction.setCheckable(True)
+        self.rulerAction.setChecked(False)
+        self.rulerAction.triggered.connect(self.toggleRulerMode)
+
+    def addCinematicFile(self):
+        options = QFileDialog.Options()
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecionar arquivo de Cinematic",
+            "",
+            "Vídeos (*.mp4 *.avi *.mkv *.mov *.webm);;Todos os Arquivos(*)",
+            options=options
+        )
+        if not filename:
+            return
+        
+        base = os.path.basename(filename)
+        dest = os.path.join(self.cinematicsDir, base)
+
+        if os.path.exists(dest):
+            name, ext = os.path.splitext(base)
+            i = 1
+            while True:
+                new_base = f"{name}_{i}{ext}"
+                dest = os.path.join(self.cinematicsDir, new_base)
+                if not os.path.exists(dest):
+                    base = new_base
+                    break
+                i += 1
+
+        shutil.copy2(filename, dest)
+        self.reloadCinematicList()
+
+    def initCinematicsTab(self):
+        self.cineWidget = QWidget()
+        layout = QVBoxLayout(self.cineWidget)
+
+        self.cineList = QListWidget()
+
+        self.cineSartButton = QPushButton("Iniciar Cinematic (5s)")
+        self.cineSartButton.clicked.connect(self.startSelectedCinematic)
+
+        layout.addWidget(QLabel("Cinematic Disponíveis: "))
+        layout.addWidget(self.cineList)
+        layout.addWidget(self.cineSartButton)
+
+        self.reloadCinematicList()
+
+        self.tabs.addTab(self.cineWidget, "Cinematics")
+
+    def reloadCinematicList(self):
+        self.cineList.clear()
+        if not os.path.isdir(self.cinematicsDir):
+            return
+        
+        for name in sorted(os.listdir(self.cinematicsDir), key=str.lower):
+            path = os.path.join(self.cinematicsDir, name)
+            if os.path.isfile(path):
+                self.cineList.addItem(name)
+
+    def startSelectedCinematic(self):
+        item = self.cineList.currentItem()
+        if not item:
+            return
+        
+        name = item.text()
+        self.pendingCinematicName = name
+        self.pendingCinematicPath = os.path.join(self.cinematicsDir, name)
+
+        self.cineSartButton.setEnabled(False)
+        self.cineSartButton.setText(f"Iniciando '{name}' em 5s...")
+        self.cineTimer.start(5000)
+
+    def runCinematic(self):
+        name = self.pendingCinematicName
+        path = self.pendingCinematicPath
+
+        print("CINEMATIC:", name, path)
+
+        self.pendingCinematicName = None
+        self.pendingCinematicPath = None
+
+        self.cineSartButton.setEnabled(True)
+        self.cineSartButton.setText("Iniciar Cinematic (5s)")
+
+        if not name or not path or not os.path.isfile(path):
+            print("Arquivo não encontrado")
+            return
+        
+        media = self.vlc_instance.media_new(path)
+        self.vlc_player.set_media(media)
+
+        win_id = int(self.videoWidget.winId())
+        self.vlc_player.set_hwnd(win_id)
+
+        self.videoWindow.show()
+        self.vlc_player.play()
 
     def toggleRubberBandMode(self, checked):
         if checked:
@@ -366,47 +622,83 @@ class MainWindow(QMainWindow):
         if color.isValid():
             token.border_color = color
             token.update()
+        #Seleção: Circulo ou Cone
+
+        light_type, ok = QInputDialog.getItem(
+            self, "Tipo de Visão",
+            "Ecolha o tipo de visão:",
+            ["Nenhuma", "Círculo(360°)", "Cone Rotacionável"], 0, False
+        )
+        
+        if not ok:
+            return
+
+        if token in self.tokenLights:
+            old = self.tokenLights.pop(token)
+            if isinstance(old ,LightItem):
+                self.savedLights[token] = ("circle", old.radius, None, None)
+            elif isinstance(old, LightCone):
+                self.savedLights[token] = ("cone", old.radius, old.angle, old.rotation_angle)
+                
+            old.setParentItem(None)
+            self.scenes[self.currentIndex()].removeItem(old)
+        
+        if light_type == "Nenhuma":
+            return
+        
+        if token in self.savedLights:
+            saved_type, saved_radius, saved_angle, saved_rot = self.savedLights[token]
+        else:
+            saved_type = saved_radius = saved_angle = saved_rot = None
 
         radius, ok = QInputDialog.getInt(self, "Raio de Visão", "Defina o raio de visão: ", 100, 10, 600)
 
         if not ok:
             return
         
-        #Seleção: Circulo ou Cone
-        light_type, ok = QInputDialog.getItem(self, "Tipo de Visão",
-        "Ecolha o tipo de visão:", ["Círculo(360°)", "Cone Rotacionável"], 0, False)
-        if not ok:
-            return
-
-        #Remove Visão antiga se houver
-        if token in self.tokenLights:
-            light = self.tokenLights.pop(token)
-            light.setParentItem(None)
-            self.scenes[self.currentIndex()].removeItem(light)
 
         if light_type == "Círculo(360°)":
             light = LightItem(radius, QPointF(0, 0))
         else:
             # CONE - pede ângulo + rotação inicial
-            angle, ok2 = QInputDialog.getInt(self, "Ângulo do Cone", "Ângulo Fixo (60-120°): ", 90, 60, 120)
-            if not ok2: return
-            rotation, ok3 = QInputDialog.getInt(self, "Rotação Cone", "Rotação Inicial (0 = Norte 90 = Leste): ", 0, 0, 359)
-            if not ok3: return
+            default_angle = saved_angle if (saved_type == "cone" and saved_angle) else 90
+            default_rot = saved_rot if (saved_type == "cone" and saved_rot is not None) else 0
+
+            angle, ok2 = QInputDialog.getInt(
+                self, "Ângulo do Cone",
+                "Ângulo Fixo (60-120°): ",
+                int(default_angle), 60, 120
+            )
+            if not ok2:
+                return
+            
+            rotation, ok3 = QInputDialog.getInt(
+                self, "Rotação Cone",
+                "Rotação Inicial (0 = Norte, 90 = Leste): ",
+                int(default_rot), 0, 359
+            )
+            if not ok3:
+                return
+            
             light = LightCone(radius, QPointF(0, 0), angle)
             light.setRotationAngle(rotation)
+
+            self.savedLights[token] = ("cone", radius, angle, rotation)
 
         light.setParentItem(token)
         light.setPos(token.boundingRect().center())
         self.tokenLights[token] = light
 
-        if token in self.tokenLights and isinstance(self.tokenLights[token], LightCone):
-            current_light = self.tokenLights[token]
-            new_rotation, ok = QInputDialog.getInt(self, "Ajustar Rotação do Cone",
-            f"Rotação Atual: {current_light.rotation_angle}°\nNovo valor (0-359°): ",
-            current_light.rotation_angle, 0, 359)
+    def toggleRulerMode(self, checked):
+        self.rulerMode = checked
+        if checked:
+            self.rubberBandAction.setChecked(False)
+            self.toggleRubberBandMode(False)
 
-            if ok:
-                current_light.setRotationAngle(new_rotation)
+        if not checked and self.currentRuler:
+            scene = self.scenes[self.currentIndex()]
+            scene.removeItem(self.currentRuler)
+            self.currentRuler = None
 
     def addTextOnMap(self):
         idx = self.currentIndex()
@@ -455,6 +747,32 @@ class MainWindow(QMainWindow):
         scene.addItem(fog)
         self.fogItems[idx] = fog
 
+    def apply_theme(self, mode):
+        self.currentTheme = mode
+        app = QApplication.instance()
+
+        if mode =="dark":
+            app.setStyle("Fusion")
+            palette = app.palette()
+
+            palette.setColor(QPalette.Window, QColor(45, 45, 45))
+            palette.setColor(QPalette.WindowText, Qt.white)
+            palette.setColor(QPalette.Base, QColor(30, 30, 30))
+            palette.setColor(QPalette.AlternateBase, QColor(45, 45, 45))
+            palette.setColor(QPalette.ToolTipBase, Qt.white)
+            palette.setColor(QPalette.ToolTipText, Qt.white)
+            palette.setColor(QPalette.Text, Qt.white)
+            palette.setColor(QPalette.Button, QColor(45, 45, 45))
+            palette.setColor(QPalette.ButtonText, Qt.white)
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Highlight, QColor(90, 120, 200))
+            palette.setColor(QPalette.HighlightedText, Qt.black)
+
+            app.setPalette(palette)
+        else:
+            app.setStyle("")
+            app.setPalette(app.style().standardPalette())
+
     def clearCurrentScene(self):
         idx = self.currentIndex()
         if idx < 0:
@@ -462,9 +780,10 @@ class MainWindow(QMainWindow):
         scene = self.scenes[idx]
         mapItem = self.mapItems[idx]
         items = list(scene.items())
-        for item in items:
-            if item != mapItem:
-                scene.removeItem(item)
+        for item in list(scene.items()):
+            scene.removeItem(item)
+
+        self.mapItems[idx] = None
         self.turnLists[idx].clear()
         self.fogItems[idx] = None
         #Remove Luzes relacionadas a cena
@@ -531,6 +850,71 @@ class MainWindow(QMainWindow):
             return
 
         super().keyPressEvent(event) 
+
+    def saveSettings(self):
+        data = {}
+        data["theme"] = getattr(self, "currentTheme", "light")
+        data["window"] = {
+            "size": [self.width(), self.height()],
+            "pos": [self.x(), self.y()]
+        }
+        scenes_data = []
+        for i in range(len(self.scenes)):
+            scene_info = {
+                "name": self.tabs.tabText(i),
+                "turns": [self.turnLists[i].item(j).text() 
+                    for j in range(self.turnLists[i].count())]
+            }
+            scenes_data.append(scene_info)
+        data["scenes"] = scenes_data
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+    
+    def loadSettings(self):
+        if not os.path.isfile(SETTINGS_FILE):
+            return
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        
+        theme = data.get("theme", "light")
+        self.apply_theme(theme)
+
+        win = data.get("window", {})
+        size = win.get("size")
+        pos = win.get("pos")
+        if size and len(size) == 2:
+            self.resize(size[0], size[1])
+        if pos and len(pos) == 2:
+            self.move(pos[0], pos[1])
+        
+        scenes_data = data.get("scenes", [])
+
+        self.tabs.clear()
+        self.scenes = []
+        self.views = []
+        self.turnLists = []
+        self.nameInputs = []
+        self.mapItems = []
+        self.fogItems = []
+
+        for scene_info in scenes_data:
+            name = scene_info.get("name", "Cena")
+            self.addSceneTab(name)
+            idx = self.tabs.count() - 1
+            for turn in scene_info.get("turns", []):
+                self.turnLists[idx].addItem(turn)
+
+        self.initCinematicsTab()
+
+    def closeEvent(self, event):
+        self.saveSettings()
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

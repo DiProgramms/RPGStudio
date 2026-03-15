@@ -1,0 +1,21 @@
+{
+  "theme": "dark",
+  "window": {
+    "size": [
+      1360,
+      697
+    ],
+    "pos": [
+      13,
+      -8
+    ]
+  },
+  "scenes": [
+    {
+      "name": "Cena 1",
+      "turns": [
+        "Azagrov"
+      ]
+    }
+  ]
+}

@@ -8,8 +8,10 @@ from PyQt5.QtMultimediaWidgets import QVideoWidget
 
 import sys, json, math, os, shutil
 
-os.add_dll_directory(r"C:\Program Files\VideoLAN\VLC")
 import vlc
+
+if sys.platform == "win32":
+    os.add_dll_directory(r"C:\Program Files\VideoLAN\VLC")
 
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
@@ -227,6 +229,83 @@ class RulerItem(QGraphicsLineItem):
         mid = QPointF((start.x() + end.x()) / 2, (start.y() + end.y()) / 2)
         self.textItem.setPos(mid)
         self.setZValue(2)
+
+class HealthBar(QGraphicsRectItem):
+    def __init__(self, max_health, current_health, parent=None):
+        super().__init__(-50, -25, 100, 8, parent)
+        self.max_health = max_health
+        self.current_health = current_health
+        self.setZValue(10)
+        self.setFlag(QGraphicsRectItem.ItemIsMovable, False)
+        self.setFlag(QGraphicsRectItem.ItemIsSelectable, False)
+
+    def setHealth(self, health):
+        self.current_health = min(max(health, 0), self.max_health)
+        self.update()
+
+    def paint (self, painter, option, widget):
+        rect = self.boundingRect()
+        
+        painter.setBrush(QBrush(QColor(60, 60, 60)))
+        painter.setPen(QPen(QColor(100, 100,100), 1))
+        painter.drawRect(rect)
+
+        ratio = self.current_health / self.max_health
+        fill_width = rect.width() * ratio
+
+        if ratio > 0.6:
+            color = QColor(0, 200, 0)
+        elif ratio > 0.3:
+            color = QColor(255, 255, 0)
+        else:
+            color = QColor(255, 50, 50)
+        
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.NoPen)
+        painter.drawRect(rect.x(), rect.y(), fill_width, rect.height())
+
+        painter.setPen(QPen(QColor(100, 100, 100), 1))
+        painter.drawRect(rect)
+
+class PlayerCard(QGraphicsRectItem):
+    def __init__(self, pixmap, name, max_health, current_health, is_boss=False, parent=None):
+        super().__init__(-100, -125, 200, 250, parent)
+        self.setFlag(QGraphicsRectItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsRectItem.ItemIsSelectable, True)
+        self.setZValue(15)
+
+        self.name = name
+        self.is_boss = is_boss
+        self.max_health = max_health
+        self.current_health = current_health
+
+        self.bg_rect = QGraphicsRectItem(self.rect(), self)
+        self.bg_rect.setBrush(QBrush(QColor(40, 40, 60) if is_boss else QColor(20, 40, 80)))
+        self.bg_rect.setPen(QPen(QColor(80, 80, 120), 2))
+
+        self.image_item = QGraphicsPixmapItem(pixmap.scaled(80, 80, Qt.KeepAspectRatio, 
+        Qt.ScreenTransformation), self)
+        self.image_item.setPos(-40, 10)
+
+        self.name_text = QGraphicsTextItem(name, self)
+        self.name_text.setDefaultTextColor(Qt.white)
+        font = QFont()
+        font.setPointSize(12 if is_boss else 10)
+        self.name_text.setFont(font)
+        self.name_text.setPos(-80, 95)
+
+        self.health_bar = HealthBar(max_health, current_health, self)
+        self.health_bar.setPos(-50, 130)
+
+        self.hp_text =  QGraphicsTextItem(f"{current_health}/{max_health} HP", self)
+        self.hp_text.setDefaultTextColor(Qt.white)
+        self.hp_text.setFont(QFont("Arial", 9))
+        self.hp_text.setPos(-45, 145)
+
+        def setHealth(self, health):
+            self.current_health = health
+            self.health_bar.setHealth(health)
+            self.hp_text.setPlainText(f"{health}/{self.max_health} HP")
 
 class TokenItem(QGraphicsPixmapItem):
 
